@@ -1,8 +1,9 @@
 use axum::{
     body::Body,
     extract::{Request, State},
+    http::StatusCode,
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 
 #[derive(Debug, Clone)]
@@ -32,8 +33,14 @@ pub async fn capture_identity(
         .map(str::trim)
         .map(ToOwned::to_owned);
 
-    request.extensions_mut().insert(RequestIdentity {
-        user: user.unwrap_or_default(),
-    });
+    let Some(user) = user.filter(|value| !value.is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "missing user-identity header",
+        )
+            .into_response();
+    };
+
+    request.extensions_mut().insert(RequestIdentity { user });
     next.run(request).await
 }

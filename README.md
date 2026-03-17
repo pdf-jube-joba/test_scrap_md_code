@@ -6,15 +6,21 @@ HTTP リクエスト経由でディレクトリの編集を行う。
 ## 概要
 - 起動時引数で repository root となる path を受け取る。
 - repository root 外は触らない（ validation や sanitize を行う）。
-- `REPOSITORY/.repo/` 以下は専用のディレクトリとして、 URL の指定は不可とする。
-- `REPOSITORY/.repo/config.toml` で設定を書く。
+- `REPOSITORY/.repo/` 以下は専用のディレクトリとする。
+- config で細かい指定ができる。
+- plugin で hook を書いて生成などをすることができるようにする。
+- task で起動前に plugin invoke ができるようにする。
 
 > [!warning]
-> この server ではユーザーの認証は行わない。
-> 必要があれば認証用の wrapper を使うこと。
+> このサーバーではユーザーの認証・https 化は行わない。
+> 必要があれば wrapper を通すこと。
 
 ## API
-- `/PATH/` はディレクトリに対応し、`/FILE` はファイルに対応する。柔軟な対応はしない。
+全てのリクエストで `user-identity` （文字列）を設定すること。
+> [!warning]
+> もし設定されていないならリクエストを拒否する。
+
+- `/PATH/` はディレクトリに対応し、`/FILE` はファイルに対応する。
 - `GET URL` は内容の取得
   - `GET /dir/` なら、 ディレクトリ直下の内容を 1 entry 1 line で返す。
   - `GET /file.txt` ならファイルの内容をそのまま返す。
@@ -27,10 +33,120 @@ HTTP リクエスト経由でディレクトリの編集を行う。
 - `DELETE URL` は削除。
   - `DELETE /dir/` ならディレクトリを削除する、**ただし、空のディレクトリのときだけ。**
   - `DELETE /file.txt` ならファイルを削除する。
-- いずれにせよ、その途中のパスが存在しない場合はエラーとする。
+
+> [!warning]
+> 柔軟な対応はしない。愚直に対応する。
+> - ファイルでの指定でディレクトリが見つかったときは、ディレクトリに直さずにエラーにする。
+> - URL の途中のパスが存在しない場合はエラーとする。
+
+> [!warning]
+> URL としては `.repo/` は一切指定できないものとする。
 
 ## config
-- `[serve]` 内で `port = 3000` のように指定する。未指定なら `3000`
+`REPOSITORY/.repo/config.toml` で設定を書く。
+
+### serve
+port を指定する。未指定なら `3000`
+```
+[serve]
+port = 3030
+```
+### policy
+path に対して API 経由での GET/POST/DELETE/PUT をやってよいかを指定できる。
+```
+[[policy]]
+path = ".git/"
+GET = false
+POST = false
+PUT = false
+DELETE = false
+```
+なお、 `.repo/` 以下は設定できない。
+そもそも API でも `.repo/` 以下はエラーとする。
+
+### mount
+path の転送を行う。
+```
+[[mount]]
+url_prefix = "/assets/"
+source = ".repo/generated/assets/"
+```
+- mount 先は `.repo/generated/` 以下とし、その外は不可とする。
+- URL は何でもいいが、そこに対しては、 **GET のみ**できることとする。
+
+例えば上の例では、 `/assets/*` へのアクセスは `.repo/generated/assets/*` へのアクセスにして、 GET のみが許される。
+glob は指定できない。
+
+> [!warning]
+> `url_prefix` がすでに `REPOSITORY/` に存在するディレクトリとかぶったらエラーとする。
+> これは serve 前に検知してエラーを吐いて終了すること。
+
+### plugin
+hook のような形で、プラグインを記述する。内部では `{PLACE_HOLDER}` の記法が使える。
+```
+[[plugin]]
+name = "convert-md-html"
+runner = "command"
+command = ["python3", "./convert-md-html.py", "{GET.PATH}"]
+trigger = "GET"
+path = "*.md"
+```
+上のプラグインは外部コマンドの invoke を行う：
+`*.md` に該当する GET があったときに `{GET.PATH}` をファイル名で置き換えて実行する。
+
+> [!note]
+> 将来的には、 `"command"` じゃなくて wasm も指定できるとうれしいが、 interface を考えるのが難しい。
+
+### task
+plugin をどの順番に実行するかを書いて、起動時に指定する。
+```
+[[task]]
+name = "build"
+steps = ["build-wasm", "build-autosummary"]
+```
+
+## plugin
+`config.toml` で指定したもののみを対象とする。
+
+実行するタイミングは、
+1. `trigger = "manual"` 以外の場合は、特定の API 操作が呼ばれたとき。
+2. `trigger = "manual"` の場合には、
+  - `POST /.plugin/<PLUGIN_NAME>/run` が来た時
+  - `task` で指定されたとき... serve の前に行われる。
+
+> [!warning]
+> plugin が書き換えるのは
+> - `.repo/generated/<PLUGIN_NAME>` ... mount で使える、 API で露出するようのディレクトリ：最終成果物など
+> - `.repo/cache/<PLUGIN_NAME>` ... API 経由では触れないディレクトリ：中間成果物やキャッシュなど
+> それ以外の書き換えは自己責任とする。
+
+例：
+```
+[[plugin]]
+name = "wasm-build"
+runner = "command"
+command = ["cargo", "build", "--target", "wasm32-unknown-unknown"]
+trigger = "manual"
+```
+これは明らかに `REPOSITORY_ROOT/target/` を書き換えるが、無視する。
+同様に、 git を使って自動で履歴保存とかも同じようになるはず。
+
+### place holder について
+基本的には trigger ごと設定できる項目を分けて、ここに乗っているもの以外は評価をしない。
+
+全体で使えるもの
+- `REPOSITORY_NAME`
+- `PLUGIN_NAME`
+- `OUTPOST_DIRECTORY` ... `.repo/generated/<PLUGIN_NAME>` のこと
+
+GET
+- `GET.PATH`
+- `GET.USER-IDENTITY`
+
+POST/PUT/DELETE も同様のものだけ実装する。
+
+## task
+task が指定されたときに、 serve 前に指定された plugin を順番に起動する。
 
 ## 起動方法
 
@@ -56,8 +172,6 @@ cargo run -- ./test-repository
   - 空の `notes` ディレクトリを削除
 - `DELETE /new.md`:
   - `new.md` を削除
-- すべてのリクエスト:
-  - 必要なら wrapper/proxy が user identity ヘッダを付ける
 
 # 実装について
 

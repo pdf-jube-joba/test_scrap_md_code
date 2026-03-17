@@ -9,9 +9,10 @@ anyhow = "1.0"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["json"] }
 camino = { version = "1.1", features = ["serde1"] }
+glob = "0.3"
 mime_guess = "2.0"
 serde = { version = "1.0", features = ["derive"] }
-tokio = { version = "1.44", features = ["fs", "macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1.44", features = ["fs", "macros", "process", "rt-multi-thread", "signal"] }
 toml = "0.8"
 tower-http = { version = "0.6", features = ["fs", "trace"] }
 tracing = "0.1"

@@ -5,6 +5,8 @@ use async_trait::async_trait;
 use camino::{Utf8Path, Utf8PathBuf};
 use tokio::fs;
 
+
+// .repo 以外を書き換えるインターフェースの提供
 #[async_trait]
 pub trait Repository: Send + Sync {
     fn repository_root(&self) -> &Utf8Path;
